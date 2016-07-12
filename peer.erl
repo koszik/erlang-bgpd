@@ -101,7 +101,7 @@ decode_path_attributes(Peer, Path_Attribute) ->
     decode_path_attributes(Peer, Path_Attribute, #attrib{}).
 
 %%%%%%% MESSAGES parsing
--define(OPEN_MESSAGE, << Version:8, AS:16, Hold_time:16, ID:32, Optional_parameters_length:8, Optional_parameters:(Optional_parameters_length)/binary >>).
+-define(OPEN_MESSAGE, << Version:8, AS:16, Hold_time:16, ID:4/binary, Optional_parameters_length:8, Optional_parameters:(Optional_parameters_length)/binary >>).
 -define(UPDATE_MESSAGE,
 << Withdrawn_Routes_Length:16, Withdrawn_Routes:(Withdrawn_Routes_Length)/binary,
    Total_Path_Attribute_Length:16, Path_Attributes:(Total_Path_Attribute_Length)/binary,
@@ -139,6 +139,7 @@ parse_message(Peer, 1, ?OPEN_MESSAGE) when Peer#peer.state == init, Version == 4
     NewPeer = Peer#peer{state=open, hold_time = min(Peer#peer.hold_time, Hold_time), remote_as = AS, remote_id = ID},
     if NewPeer#peer.hold_time /= 0 -> spawn_link(?MODULE, keepalive, [NewPeer]) end,
     send_keepalive(NewPeer),
+    io:format("~p: OPEN: remote AS: ~p, remote ID: ~w, hold_time: ~p~n", [self(), AS, ID, Hold_time]),
     Newest = decode_optional_parameters(NewPeer, Optional_parameters),
     peer_manager ! {peer_state, Newest},
     Newest;
