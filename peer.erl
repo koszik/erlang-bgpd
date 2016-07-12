@@ -1,13 +1,9 @@
 -module(peer).
--define(HOST, "88.151.96.253").
 -define(BGP_HEADER_SIZE, 19).
--define(HOLD_TIME, 30).
--define(AS, 41075).
--define(ID, 12345678).
 -define(BGP_MARKER, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255).
--define(PEER_RECORD, state, sock, hold_time, last_message_received, local_as, remote_as, local_id, remote_id, prefix_store_pid).
+-define(PEER_RECORD, state, sock, hold_time, last_message_received, local_as, remote_as, local_id, remote_id, prefix_store_pid, remote_ip, vrf).
 -record(peer, {?PEER_RECORD}). 
--export([connect/1, start_client/0, keepalive/1]).
+-export([connect/5, keepalive/1]).
 -include("peer.hrl").
 
 mod(X,Y) -> (X rem Y + Y) rem Y.
@@ -98,34 +94,63 @@ decode_path_attributes(Peer, ?PATH_ATTRIBUTE, Attrib)
     NewAttrib = type_code(Attrib, Type_Code, Data),
     case NewAttrib of
 	[] -> decode_path_attributes(Peer, Rest2, Attrib);
-	X -> %io:format("out: optional:~p, transitive:~p, partial:~p, type_dec:~p, data_dec:~p~n", [Attrib#attrib.optional, Attrib#attrib.transitive, Attrib#attrib.partial, Attrib#attrib.type_decoded, Attrib#attrib.data_decoded]),
+	_ -> %io:format("out: optional:~p, transitive:~p, partial:~p, type_dec:~p, data_dec:~p~n", [Attrib#attrib.optional, Attrib#attrib.transitive, Attrib#attrib.partial, Attrib#attrib.type_decoded, Attrib#attrib.data_decoded]),
 	 decode_path_attributes(Peer, Rest2, NewAttrib)
     end.
 decode_path_attributes(Peer, Path_Attribute) ->
     decode_path_attributes(Peer, Path_Attribute, #attrib{}).
 
 %%%%%%% MESSAGES parsing
--define(OPEN_MESSAGE, << Version:8, AS:16, Hold_time:16, ID:32, Optional_parameters_length:8, Optional_parameters/binary >>).
+-define(OPEN_MESSAGE, << Version:8, AS:16, Hold_time:16, ID:32, Optional_parameters_length:8, Optional_parameters:(Optional_parameters_length)/binary >>).
 -define(UPDATE_MESSAGE,
 << Withdrawn_Routes_Length:16, Withdrawn_Routes:(Withdrawn_Routes_Length)/binary,
    Total_Path_Attribute_Length:16, Path_Attributes:(Total_Path_Attribute_Length)/binary,
    Network_Layer_Reachability_Information/binary >>).
 
 
+% Multiprotocol Extensions for BGP-4 [RFC2858]
+decode_capability(Peer, 1, <<AFI:16, _Reserved:8, SAFI:8>>) ->
+    io:format("MP-BGP: AFI: ~p, SAFI: ~p~n", [AFI, SAFI]),
+    Peer;
+% Route Refresh Capability for BGP-4 [RFC2918]
+decode_capability(Peer, 2, <<>>) ->
+    io:format("Route refresh supported~n", []),
+    Peer;
+% Support for 4-octet AS number capability [RFC6793]
+decode_capability(Peer, 65, <<AS:32>>) ->
+    io:format("Remote 32-bit AS: ~p~n", [AS]),
+    Peer;
+decode_capability(Peer, Type, Value) ->
+    io:format("unsupported capability: ~p ~p~n", [Type, Value]),
+    Peer.
+
+decode_capabilities(Peer, <<>>) ->
+    Peer;
+decode_capabilities(Peer, <<Type:8, Length:8, Value:(Length)/binary, Rest/binary>>) ->
+    decode_capabilities(decode_capability(Peer, Type, Value), Rest).
+
+decode_optional_parameters(Peer, <<>>) ->
+    Peer;
+decode_optional_parameters(Peer, <<2:8, Length:8, Value:(Length)/binary, Rest/binary>>) ->
+    decode_optional_parameters(decode_capabilities(Peer, Value), Rest).
+
 % OPEN
-parse_message(Peer, 1, ?OPEN_MESSAGE) when Peer#peer.state == init, Version == 4, Hold_time == 0 ; Hold_time >= 3, byte_size(Optional_parameters) >= Optional_parameters_length ->
+parse_message(Peer, 1, ?OPEN_MESSAGE) when Peer#peer.state == init, Version == 4, Hold_time == 0 ; Hold_time >= 3 ->
     NewPeer = Peer#peer{state=open, hold_time = min(Peer#peer.hold_time, Hold_time), remote_as = AS, remote_id = ID},
     if NewPeer#peer.hold_time /= 0 -> spawn_link(?MODULE, keepalive, [NewPeer]) end,
-    NewPeer;
+    send_keepalive(NewPeer),
+    Newest = decode_optional_parameters(NewPeer, Optional_parameters),
+    peer_manager ! {peer_state, Newest},
+    Newest;
 % UPDATE
 parse_message(Peer, 2, ?UPDATE_MESSAGE) when Peer#peer.state == established -> % Total_Path_Attribute_Length == 0 -> Network_Layer_Reachability_Information == <<>>
     WPeer = update(withdraw, Peer, Withdrawn_Routes, []),
     Attributes = decode_path_attributes(Peer, Path_Attributes),
     update(announce, WPeer, Network_Layer_Reachability_Information, Attributes);
 % NOTIFICATION
-parse_message(Peer, 3, <<Error_code:8, Error_subcode:8, Data/binary>>) ->
+parse_message(_Peer, 3, <<Error_code:8, Error_subcode:8, Data/binary>>) ->
     io:format("got NOTIFICATION: ~p/~p, ~p~n", [Error_code, Error_subcode, Data]),
-    exit();
+    exit(notification);
 % KEEPALIVE
 parse_message(Peer, 4, <<>>) when Peer#peer.state /= init ->
     Peer#peer{state = case Peer#peer.state of
@@ -156,15 +181,12 @@ send_message(Peer, Type, Data) ->
     Marker = <<?BGP_MARKER>>,
     Packet = <<Marker/binary, Length:16, Type:8, Data/binary>>,
 %    io:format("send data: ~p~n", [Packet]),
-    ok = gen_tcp:send(Peer#peer.sock, Packet),
-    Peer.
-
-
+    ok = gen_tcp:send(Peer#peer.sock, Packet).
 
 send_open(Peer) ->
-    Version = 4, AS = ?AS, Hold_time = ?HOLD_TIME, ID = ?ID, Optional_parameters_length = 0, Optional_parameters = <<>>,
+    Version = 4, AS = Peer#peer.local_as, Hold_time = Peer#peer.hold_time, ID = Peer#peer.local_id, Optional_parameters_length = 0, Optional_parameters = <<>>,
     Open = ?OPEN_MESSAGE,
-    send_message(Peer#peer{local_as = AS, hold_time = Hold_time, local_id = ID}, 1, Open).
+    send_message(Peer, 1, Open).
 
 
 send_keepalive(Peer) ->
@@ -179,14 +201,12 @@ keepalive(Peer) ->
     end.
 %%%
 
-connect(PeerAddress) ->
+connect(VRF, PeerAddress, AS, Hold_Time, ID) ->
+    register(list_to_atom("peer_"++VRF++"_"++PeerAddress), self()),
     {ok, Sock} = gen_tcp:connect(PeerAddress, 179, [binary, {active, false}, {packet, raw}]),
-    Peer = #peer{sock=Sock, state=init, prefix_store_pid = spawn_link(prefix_store, prefix_store, [])},
-    NewPeer = send_open(Peer),
-    send_keepalive(NewPeer),
-    read_header(NewPeer).
-
-
-start_client() ->
-    spawn(?MODULE, connect, [?HOST]).
-
+    Peer_skel = #peer{sock=Sock, state=init, vrf = VRF, local_as = AS, hold_time = Hold_Time, local_id = ID, remote_ip = PeerAddress},
+    StorePid = spawn_link(prefix_store, prefix_store, []),
+    register(list_to_atom("peer_store_"++VRF++"_"++PeerAddress), StorePid),
+    Peer = Peer_skel#peer{prefix_store_pid = StorePid},
+    send_open(Peer),
+    read_header(Peer).
