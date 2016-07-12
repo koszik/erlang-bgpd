@@ -24,7 +24,7 @@ peer_exit(State, _Peer, _Reason) ->
 
 loop(State) ->
     ?MODULE:loop(receive
-	{add_peer, VRF, IP, AS, Hold_Time, Router_ID} when is_list(VRF), AS > 0, AS < 4294967296, Hold_Time == 0 ; Hold_Time >= 3 -> % TODO: IP, Router_ID, AS?
+	{add_peer, VRF, IP, AS, Hold_Time, Router_ID} when is_list(VRF), AS > 0, AS < 4294967296, Hold_Time == 0 ; Hold_Time >= 3, byte_size(Router_ID) == 4 -> % TODO: IP, Router_ID, AS?
 	    add_peer(State, VRF, IP, AS, Hold_Time, Router_ID);
 	{remove_peer, _VRF, _IP} -> State;
 	{'EXIT', Pid, Reason} when Pid /= self() ->
@@ -45,7 +45,3 @@ loop() ->
 
 init() ->
     spawn(?MODULE, loop, []).
-
-
-% peer_manager ! {add_peer, "global", "88.151.99.247", 41075, 30, 12345678}.
-% prefix_store:show('peer_store_global_88.151.99.247').     
