@@ -18,10 +18,10 @@ vrfstore_send(Store, Msg) ->
 add_prefix(Store, Prefix, Length, Attribs) ->
     case catch(gb_trees:insert({Prefix, Length}, Attribs, Store#store.prefixes)) of
 	{'EXIT', _} ->
-	    vrfstore_send(Store, {announce, self(), {Prefix, Length}, Attribs}),
+	    vrfstore_send(Store, {update, self(), {Prefix, Length}, Attribs}),
 	    gb_trees:enter({Prefix, Length}, Attribs, Store#store.prefixes);
 	Tree ->
-	    vrfstore_send(Store, {update, self(), {Prefix, Length}, Attribs}),
+	    vrfstore_send(Store, {announce, self(), {Prefix, Length}, Attribs}),
 	    Tree
     end.
 
