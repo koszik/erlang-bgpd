@@ -1,23 +1,38 @@
 -module(prefix_store).
--export([prefix_store/0, prefix_store/1, show/1, show/2]).
--define(STORE_RECORD, prefixes, maximum_prefixes).
--record(store, {?STORE_RECORD}).
+-export([prefix_store/1, show/1, show/2]).
+-record(store, {vrf, prefixes, maximum_prefixes}).
 -include("peer.hrl").
-
-add_prefix(Prefixes, Prefix, Length, Attribs) ->
-    gb_trees:enter({Prefix, Length}, Attribs, Prefixes).
-
-remove_prefix(Prefixes, Prefix, Length) ->
-    case gb_trees:is_defined({Prefix, Length}, Prefixes) of
-	true -> gb_trees:delete({Prefix, Length}, Prefixes);
-	false -> io:format("prefix not found in tree! ~w~n",[{Prefix, Length}]), Prefixes
-    end.
 
 get_prefix(Prefixes, Key) ->
     case gb_trees:is_defined(Key, Prefixes) of
 	true -> gb_trees:get(Key, Prefixes);
 	false -> notfound
     end.
+
+
+vrfstore_send(Store, Msg) ->
+    Destination = list_to_atom("vrf_store_"++Store#store.vrf),
+    catch(Destination ! Msg).
+
+
+add_prefix(Store, Prefix, Length, Attribs) ->
+    case catch(gb_trees:insert({Prefix, Length}, Attribs, Store#store.prefixes)) of
+	{'EXIT', _} ->
+	    vrfstore_send(Store, {announce, self(), {Prefix, Length}, Attribs}),
+	    gb_trees:enter({Prefix, Length}, Attribs, Store#store.prefixes);
+	Tree ->
+	    vrfstore_send(Store, {update, self(), {Prefix, Length}, Attribs}),
+	    Tree
+    end.
+
+
+remove_prefix(Store, Prefix, Length) ->
+    case gb_trees:is_defined({Prefix, Length}, Store#store.prefixes) of
+	true ->  vrfstore_send(Store, {withdraw, self(), {Prefix, Length}}),
+		 gb_trees:delete({Prefix, Length}, Store#store.prefixes);
+	false -> io:format("prefix not found in tree! ~w~n",[{Prefix, Length}]), Store#store.prefixes
+    end.
+
 
 store_size(Prefixes) ->
     gb_trees:size(Prefixes).
@@ -34,39 +49,38 @@ store_iter(Fun, Acc, Prefixes) ->
     gb_enumerate(Fun, Acc, gb_trees:next(gb_trees:iterator(Prefixes))).
 
 
-% TODO: multiple prefixes not allowed with same prefix
-prefix_store(Store) ->
+prefix_store(VRF) when is_list(VRF) ->
+    prefix_store(#store{vrf=VRF, prefixes=store_init()});
+prefix_store(Store) when is_record(Store, store) ->
     ?MODULE:prefix_store(
-	receive
+    receive
 	{announce, Prefix, Length, Attribs} ->
 	    Size = store_size(Store#store.prefixes),
 	    if Store#store.maximum_prefixes /= undefined, Size >= Store#store.maximum_prefixes ->
 		io:format("~p maximum prefixes (~p) reached, exiting~n", [self(), Store#store.maximum_prefixes]),
 		exit(maximum_prefixes);
-		true -> Store#store{prefixes=add_prefix(Store#store.prefixes, Prefix, Length, Attribs)}
+		true -> Store#store{prefixes = add_prefix(Store, Prefix, Length, Attribs)}
 	    end;
 	{withdraw, Prefix, Length, _Attribs} ->
-	    Store#store{prefixes=remove_prefix(Store#store.prefixes, Prefix, Length)};
+	    Store#store{prefixes = remove_prefix(Store, Prefix, Length)};
 	{get_prefix, Prefix, Pid} ->
 	    Pid ! {transfer_store, {Prefix, get_prefix(Store#store.prefixes, Prefix)}},
-	    Pid ! {transfer_eof, undefined},
+	    Pid ! eof,
 	    Store;
 	{get_store_size, Pid} ->
 	    Pid ! {store_size, store_size(Store#store.prefixes)},
 	    Store;
 	{get_store, Pid} ->
-	    N = store_iter(fun(Key, Value, AccIn) -> Pid ! {transfer_store, {Key, Value}}, AccIn+1 end, 0, Store#store.prefixes),
-	    Pid ! {transfer_eof, N},
+	    store_iter(fun(Key, Value, _) -> Pid ! {transfer_store, {Key, Value}} end, 0, Store#store.prefixes),
+	    Pid ! eof,
 	    Store;
 	{maximum_prefixes, Maximum_Prefixes} ->
 	    Store#store{maximum_prefixes = Maximum_Prefixes};
-	M ->
-	    io:format("unknown message to ~p: ~p~n", [self(), M]),
+	Unknown ->
+	    io:format("unknown message to ~p: ~p~n", [self(), Unknown]),
 	    Store
     end).
 
-prefix_store() ->
-    prefix_store(#store{prefixes=store_init()}).
 
 print_prefix(Prefix, Attrib) ->
     io:format("~w => ~w ~w ~w ~w~n",
@@ -76,9 +90,8 @@ show_prefix(N) ->
     receive
 	{transfer_store, {_Prefix, notfound}} -> io:format("prefix not found~n"), show_prefix(N);
 	{transfer_store, {Prefix, Attrib}} -> print_prefix(Prefix, Attrib), show_prefix(N+1);
-	{transfer_eof, X} -> io:format("~p/~p prefixes total~n", [N, X]);
-	M ->
-	    io:format("unknown message to ~p: ~p~n", [self(), M])
+	eof -> io:format("~p prefixes total~n", [N]);
+	Unknown -> io:format("unknown message to ~p: ~p~n", [self(), Unknown])
     after 5000 -> timeout
     end.
 
@@ -92,4 +105,7 @@ show(Pid, verbose) ->
     show_prefix(0).
 show(Pid) ->
     Pid ! {get_store_size, self()},
-    receive {store_size, Size} -> io:format("BGP table size: ~p~n", [Size]) after 5000 -> timeout end.
+    receive
+	{store_size, Size} -> io:format("BGP table size: ~p~n", [Size])
+    after 5000 -> timeout
+    end.
