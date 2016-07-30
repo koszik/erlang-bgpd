@@ -85,14 +85,11 @@ type_code(Attrib, Flags, Code, Data) ->
     err("Error in attribute: ~w ~w ~w ~w", [Attrib, Flags, Code, Data]),
     exit(bad_attribute).
 
--define(PATH_ATTRIBUTE, << Optional:1, Transitive:1, Partial:1, Extended_Length:1, _Unused:4, Type_Code:8, ELength:Extended_Length/binary, Length:8, DataRest/binary >>).
+-define(PATH_ATTRIBUTE, << Optional:1, Transitive:1, Partial:1, Extended_Length:1, _Unused:4, Type_Code:8, ELength:Extended_Length/unit:8, Length:8, DataRest/binary >>).
 decode_path_attributes(_Peer, <<>>, Attrib) ->
     Attrib;
 decode_path_attributes(Peer, ?PATH_ATTRIBUTE, Attrib) ->
-    Real_Length = case ELength of
-	<<>> -> Length;
-	1 -> ELength * 8 + Length
-    end,
+    Real_Length = ELength * 256 + Length,
     <<Data:Real_Length/binary, Rest/binary>> = DataRest,
     Flags = #flags{optional=Optional, transitive=Transitive, partial=Partial, ebgp=Peer#peer.local_as == Peer#peer.remote_as},
     dbg("attribute: optional:~p, transitive:~p, partial:~p, type:~p, data:~p~n", [Optional, Transitive, Partial, Type_Code, Data]),
