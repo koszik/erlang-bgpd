@@ -139,7 +139,7 @@ parse_message(Peer, 1, ?OPEN_MESSAGE) when Peer#peer.state == init, Version == 4
 parse_message(Peer, 2, ?UPDATE_MESSAGE) when Peer#peer.state == established -> % Total_Path_Attribute_Length == 0 -> Network_Layer_Reachability_Information == <<>>
     WPeer = update(withdraw, Peer, Withdrawn_Routes, []),
     Attributes = decode_path_attributes(Peer, Path_Attributes),
-    update(announce, WPeer, Network_Layer_Reachability_Information, Attributes);
+    update(announce, WPeer, Network_Layer_Reachability_Information, Attributes#attrib{ebgp = Peer#peer.local_as == Peer#peer.remote_as, received_at=now()});
 % NOTIFICATION
 parse_message(_Peer, 3, <<Error_code:8, Error_subcode:8, Data/binary>>) ->
     log:err("got NOTIFICATION: ~p/~p, ~w~n", [Error_code, Error_subcode, Data]),
