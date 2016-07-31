@@ -6,14 +6,6 @@
 -include("peer.hrl").
 
 mod(X,Y) -> (X rem Y + Y) rem Y.
-err(Fmt, P) ->
-    io:format(Fmt, P).
-
-info(Fmt, P) ->
-    io:format(Fmt, P).
-
-dbg(_, _) ->
-    ok.
 
 %%%%%%%%%%%%%%% UPDATE operations
 update(_Operation, Peer, <<>>, _Attributes) -> Peer;
@@ -22,7 +14,7 @@ update(Operation, Peer, <<Length:8, Prefix:Length/bitstring, Rest/bitstring>>, A
     <<_Unused:Unused_Length/bitstring, NewRest/binary>> = Rest,
     PaddedPrefix = <<Prefix/bitstring, 0:Unused_Length>>,
     Peer#peer.prefix_store_pid ! {Operation, PaddedPrefix, Length, Attributes},
-    dbg("~w~n", [[Attributes, Operation, PaddedPrefix, Length]]),
+    log:debug("~w~n", [[Attributes, Operation, PaddedPrefix, Length]]),
     update(Operation, Peer, NewRest, Attributes).
 
 
@@ -70,19 +62,19 @@ type_code(Attrib, Flags, 7, <<AS:16, IP:32>>) -> % whenFlags==#flags{optional = 
     Attrib#attrib{aggregator = {AS, IP}, aggregator_partial = Flags#flags.partial};
 
 type_code(Attrib, Flags, Code, Data) when Flags#flags.optional == 1, Flags#flags.transitive == 1 -> %Flags==#flags{optional = 1, transitive = 1} ->
-    dbg("Unknown transitive attribute: ~p ~p~n", [Code, Data]),
+    log:debug("Unknown transitive attribute: ~p ~w~n", [Code, Data]),
     Attrib#attrib{unknown = [{Code, Data}|Attrib#attrib.unknown]};
 type_code(Attrib, Flags, Code, Data) when Flags#flags.optional == 0 -> %Flags==#flags{optional = 0, transitive = 1, partial = 0} ->
-    err("Unknown well-known transitive attribute: ~p ~p~n", [Code, Data]),
+    log:err("Unknown well-known transitive attribute: ~p ~w~n", [Code, Data]),
     exit(unknown_attribute);
 %type_code(Attrib, Flags, Code, Data) when Flags==#flags{optional = 0, transitive = 0} ->
-%    err("Well-known attribute w/o transitive: ~p ~p~n", [Code, Data]),
+%    log:err("Well-known attribute w/o transitive: ~p ~p~n", [Code, Data]),
 %    exit(bad_attribute);
 type_code(Attrib, Flags, Code, Data) when Flags#flags.partial == 0 ->
-    dbg("Unknown non-transitive attribute: ~p ~p~n", [Code, Data]),
+    log:debug("Unknown non-transitive attribute: ~p ~w~n", [Code, Data]),
     Attrib;
 type_code(Attrib, Flags, Code, Data) ->
-    err("Error in attribute: ~w ~w ~w ~w", [Attrib, Flags, Code, Data]),
+    log:err("Error in attribute: ~w ~w ~w ~w", [Attrib, Flags, Code, Data]),
     exit(bad_attribute).
 
 -define(PATH_ATTRIBUTE, << Optional:1, Transitive:1, Partial:1, Extended_Length:1, _Unused:4, Type_Code:8, ELength:Extended_Length/unit:8, Length:8, DataRest/binary >>).
@@ -92,11 +84,11 @@ decode_path_attributes(Peer, ?PATH_ATTRIBUTE, Attrib) ->
     Real_Length = ELength * 256 + Length,
     <<Data:Real_Length/binary, Rest/binary>> = DataRest,
     Flags = #flags{optional=Optional, transitive=Transitive, partial=Partial, ebgp=Peer#peer.local_as == Peer#peer.remote_as},
-    dbg("attribute: optional:~p, transitive:~p, partial:~p, type:~p, data:~p~n", [Optional, Transitive, Partial, Type_Code, Data]),
+    log:debug("attribute: optional:~p, transitive:~p, partial:~p, type:~p, data:~w~n", [Optional, Transitive, Partial, Type_Code, Data]),
     decode_path_attributes(Peer, Rest, type_code(Attrib, Flags, Type_Code, Data)).
 decode_path_attributes(Peer, Path_Attribute) ->
     Attrib = decode_path_attributes(Peer, Path_Attribute, #attrib{}),
-    if Attrib#attrib.origin == unknown; Attrib#attrib.as_path == unknown; Attrib#attrib.next_hop == unknown -> err("mandatory attribute missing: ~w~n", [Attrib]), exit(bad_attribute);
+    if Attrib#attrib.origin == unknown; Attrib#attrib.as_path == unknown; Attrib#attrib.next_hop == unknown -> log:err("mandatory attribute missing: ~w~n", [Attrib]), exit(bad_attribute);
 	true -> Attrib
     end.
 
@@ -110,18 +102,18 @@ decode_path_attributes(Peer, Path_Attribute) ->
 
 % Multiprotocol Extensions for BGP-4 [RFC2858]
 decode_capability(Peer, 1, <<AFI:16, _Reserved:8, SAFI:8>>) ->
-    info("MP-BGP: AFI: ~p, SAFI: ~p~n", [AFI, SAFI]),
+    log:info("MP-BGP: AFI: ~p, SAFI: ~p~n", [AFI, SAFI]),
     Peer;
 % Route Refresh Capability for BGP-4 [RFC2918]
 decode_capability(Peer, 2, <<>>) ->
-    info("Route refresh supported~n", []),
+    log:info("Route refresh supported~n", []),
     Peer;
 % Support for 4-octet AS number capability [RFC6793]
 decode_capability(Peer, 65, <<AS:32>>) ->
-    err("Remote 32-bit AS: ~p~n", [AS]),
+    log:info("Remote 32-bit AS: ~p~n", [AS]),
     Peer;
 decode_capability(Peer, Type, Value) ->
-    err("unsupported capability: ~p ~p~n", [Type, Value]),
+    log:info("unsupported capability: ~p ~w~n", [Type, Value]),
     Peer.
 
 decode_capabilities(Peer, <<>>) ->
@@ -139,7 +131,7 @@ parse_message(Peer, 1, ?OPEN_MESSAGE) when Peer#peer.state == init, Version == 4
     NewPeer = Peer#peer{state=open, hold_time = min(Peer#peer.hold_time, Hold_time), remote_as = AS, remote_id = ID},
     if NewPeer#peer.hold_time /= 0 -> spawn_link(?MODULE, keepalive, [NewPeer]) end,
     send_keepalive(NewPeer),
-    info("~p: OPEN: remote AS: ~p, remote ID: ~w, proposed hold time: ~p, agreed hold time: ~p~n", [self(), AS, ID, Hold_time, NewPeer#peer.hold_time]),
+    log:info("~p: OPEN: remote AS: ~p, remote ID: ~w, proposed hold time: ~p, agreed hold time: ~p~n", [self(), AS, ID, Hold_time, NewPeer#peer.hold_time]),
     Newest = decode_optional_parameters(NewPeer, Optional_parameters),
     peer_manager ! {peer_state, Newest},
     Newest;
@@ -150,7 +142,7 @@ parse_message(Peer, 2, ?UPDATE_MESSAGE) when Peer#peer.state == established -> %
     update(announce, WPeer, Network_Layer_Reachability_Information, Attributes);
 % NOTIFICATION
 parse_message(_Peer, 3, <<Error_code:8, Error_subcode:8, Data/binary>>) ->
-    err("got NOTIFICATION: ~p/~p, ~p~n", [Error_code, Error_subcode, Data]),
+    log:err("got NOTIFICATION: ~p/~p, ~w~n", [Error_code, Error_subcode, Data]),
     exit(notification);
 % KEEPALIVE
 parse_message(Peer, 4, <<>>) when Peer#peer.state /= init ->
@@ -167,7 +159,7 @@ parse_header(Peer, << Marker:16/binary, Length:16, Type:8 >>) when Marker == <<?
     {ok, Data} = if Read_Length > 0 -> gen_tcp:recv(Peer#peer.sock, Read_Length);
 		    true -> {ok, <<>>}
 		 end,
-    dbg("type: ~p, data: ~p~n", [Type, Data]),
+    log:debug("header: type: ~p, data: ~w~n", [Type, Data]),
     parse_message(Peer, Type, Data).
 
 
@@ -181,7 +173,7 @@ send_message(Peer, Type, Data) ->
     Length = byte_size(Data) + ?BGP_HEADER_SIZE,
     Marker = <<?BGP_MARKER>>,
     Packet = <<Marker/binary, Length:16, Type:8, Data/binary>>,
-    dbg("send data: ~p~n", [Packet]),
+    log:debug("send data: ~w~n", [Packet]),
     ok = gen_tcp:send(Peer#peer.sock, Packet).
 
 send_open(Peer) ->

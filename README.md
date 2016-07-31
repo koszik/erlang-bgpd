@@ -1,6 +1,7 @@
 Usage:
 ```erlang
 $ erl
+> c(log).
 > c(peer).
 > c(peer_manager).
 > peer_manager:init().

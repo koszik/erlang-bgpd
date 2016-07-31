@@ -18,6 +18,7 @@ vrfstore_send(Store, Msg) ->
 add_prefix(Store, Prefix, Length, Attribs) ->
     case catch(gb_trees:insert({Prefix, Length}, Attribs, Store#store.prefixes)) of
 	{'EXIT', _} ->
+	    %log:debug("update ~w~n", [[Prefix, Length]]),
 	    vrfstore_send(Store, {update, self(), {Prefix, Length}, Attribs}),
 	    gb_trees:enter({Prefix, Length}, Attribs, Store#store.prefixes);
 	Tree ->
@@ -30,7 +31,7 @@ remove_prefix(Store, Prefix, Length) ->
     case gb_trees:is_defined({Prefix, Length}, Store#store.prefixes) of
 	true ->  vrfstore_send(Store, {withdraw, self(), {Prefix, Length}}),
 		 gb_trees:delete({Prefix, Length}, Store#store.prefixes);
-	false -> io:format("prefix not found in tree! ~w~n",[{Prefix, Length}]), Store#store.prefixes
+	false -> log:info("prefix not found in tree! ~w~n",[{Prefix, Length}]), Store#store.prefixes
     end.
 
 
@@ -57,7 +58,7 @@ prefix_store(Store) when is_record(Store, store) ->
 	{announce, Prefix, Length, Attribs} ->
 	    Size = store_size(Store#store.prefixes),
 	    if Store#store.maximum_prefixes /= undefined, Size >= Store#store.maximum_prefixes ->
-		io:format("~p maximum prefixes (~p) reached, exiting~n", [self(), Store#store.maximum_prefixes]),
+		log:err("~p maximum prefixes (~p) reached, exiting~n", [self(), Store#store.maximum_prefixes]),
 		exit(maximum_prefixes);
 		true -> Store#store{prefixes = add_prefix(Store, Prefix, Length, Attribs)}
 	    end;
@@ -77,7 +78,7 @@ prefix_store(Store) when is_record(Store, store) ->
 	{maximum_prefixes, Maximum_Prefixes} ->
 	    Store#store{maximum_prefixes = Maximum_Prefixes};
 	Unknown ->
-	    io:format("unknown message to ~p: ~p~n", [self(), Unknown]),
+	    log:err("unknown message to ~p: ~p~n", [self(), Unknown]),
 	    Store
     end).
 

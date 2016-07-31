@@ -29,12 +29,12 @@ loop(State) ->
 	{remove_peer, _VRF, _IP} -> State;
 	{'EXIT', Pid, Reason} when Pid /= self() ->
 	    case find_peer_by_pid(State, Pid) of
-		false -> io:format("exit from unknown pid received ~p ~w~n", [Pid, Reason]),
+		false -> log:err("exit from unknown pid received ~p ~w~n", [Pid, Reason]),
 		    State;
 		Peer -> peer_exit(State, Peer, Reason)
 	    end;
 	X ->
-	    io:format("peer_manager: unknown message received: ~w~n", [X]),
+	    log:err("unknown message received: ~w~n", [X]),
 	    State
     end).
 loop() ->
