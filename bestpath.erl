@@ -25,9 +25,9 @@ smaller(First, Second) ->
 
 
 % prefer lower neighbor router ID
-compare_router_id(Config, Attrib1, Attrib2) ->
+compare_router_id(_Config, Attrib1, Attrib2) ->
     case smaller(Attrib1#attrib.router_id, Attrib2#attrib.router_id) of
-	equal -> log:err("exactly equal routes! ~w~n", [[Config, Attrib1, Attrib2]]), first;
+	equal -> log:err("exactly equal routes! ~w~n", [[Attrib1, Attrib2]]), first;
 	R -> R
     end.
 
@@ -67,14 +67,14 @@ compare_origin(Config, Attrib1, Attrib2) ->
 	R -> R
     end.
 
-as_path_length(Acc, {as_sequence, S}) -> Acc + length(S);
-as_path_length(Acc, {as_set, _}) -> Acc + 1.
+as_path_length({as_sequence, S}, Acc) -> Acc + length(S);
+as_path_length({as_set, _}, Acc) -> Acc + 1.
 as_path_length(undefined) -> -1;
 as_path_length(ASPath) -> lists:foldl(fun as_path_length/2, 0, ASPath).
 
 % prefer locally originated routes; prefer shorter paths
 compare_as_path(Config, Attrib1, Attrib2) ->
-    case smaller(as_path_length(Attrib1#attrib.as_path), as_path_length(Attrib1#attrib.as_path)) of
+    case smaller(as_path_length(Attrib1#attrib.as_path), as_path_length(Attrib2#attrib.as_path)) of
 	equal -> compare_origin(Config, Attrib1, Attrib2);
 	R -> R
     end.
