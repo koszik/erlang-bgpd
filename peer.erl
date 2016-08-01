@@ -1,7 +1,7 @@
 -module(peer).
 -define(BGP_HEADER_SIZE, 19).
 -define(BGP_MARKER, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255).
--record(peer, {state, sock, hold_time, last_message_received, local_as, remote_as, local_id, remote_id, prefix_store_pid, remote_ip, vrf}). 
+-record(peer, {state, sock, hold_time, last_message_received, local_as, remote_as, local_id, remote_id, prefix_store_pid, remote_ip, vrf, as4 = false}). 
 -export([connect/5, keepalive/1]).
 -include("peer.hrl").
 
@@ -18,19 +18,26 @@ update(Operation, Peer, <<Length:8, Prefix:Length/bitstring, Rest/bitstring>>, A
     update(Operation, Peer, NewRest, Attributes).
 
 
-unfold_ases(<<>>) ->
+unfold_ases(_Peer, <<>>) ->
     [];
-unfold_ases(<<AS:16, Rest/binary>>) ->
-    [AS|unfold_ases(Rest)].
+unfold_ases(Peer, <<AS:16, Rest/binary>>) when Peer#peer.as4 == false ->
+    [AS|unfold_ases(Peer, Rest)];
+unfold_ases(Peer, <<AS:32, Rest/binary>>) when Peer#peer.as4 == true ->
+    [AS|unfold_ases(Peer, Rest)].
 
-decode_as_path(<<>>) ->
-    [];
-decode_as_path(<<Type:8, Length:8, Value:Length/binary-unit:16, Rest/binary>>) when Type == 1; Type == 2 ->
+
+decode_as_path(Peer, Type, Value, Rest) ->
     Type_atom = case Type of
 		  1 -> as_set;
 		  2 -> as_sequence
 		end,
-    [{Type_atom, unfold_ases(Value)}|decode_as_path(Rest)].
+    [{Type_atom, unfold_ases(Peer, Value)}|decode_as_path(Peer, Rest)].
+decode_as_path(_Peer, <<>>) ->
+    [];
+decode_as_path(Peer, <<Type:8, Length:8, Value:Length/binary-unit:16, Rest/binary>>) when Peer#peer.as4 == false ->
+    decode_as_path(Peer, Type, Value, Rest);
+decode_as_path(Peer, <<Type:8, Length:8, Value:Length/binary-unit:32, Rest/binary>>) when Peer#peer.as4 == true ->
+    decode_as_path(Peer, Type, Value, Rest).
 
 
 decode_communities(<<>>) -> [];
@@ -40,7 +47,7 @@ decode_community(C) ->
 
 -record(flags, {optional, transitive, partial, ebgp}).
 % ORIGIN
-type_code(Attrib, Flags, 1, <<Origin:8>>) -> %when Flags==#flags{optional = 0, transitive = 1, partial = 0} ->
+type_code(_Peer, Attrib, Flags, 1, <<Origin:8>>) -> %when Flags==#flags{optional = 0, transitive = 1, partial = 0} ->
     Origin_atom = case Origin of
 		    0 -> igp;
 		    1 -> egp;
@@ -48,39 +55,39 @@ type_code(Attrib, Flags, 1, <<Origin:8>>) -> %when Flags==#flags{optional = 0, t
 		end,
     Attrib#attrib{origin = Origin_atom};
 % AS_PATH
-type_code(Attrib, Flags, 2, ASPath) -> % when Flags==#flags{optional = 0, transitive = 1, partial = 0} ->
-    Attrib#attrib{as_path = decode_as_path(ASPath)};
+type_code(Peer, Attrib, Flags, 2, ASPath) -> % when Flags==#flags{optional = 0, transitive = 1, partial = 0} ->
+    Attrib#attrib{as_path = decode_as_path(Peer, ASPath)};
 % NEXTHOP
-type_code(Attrib, Flags, 3, NextHop) -> % whenFlags==#flags{optional = 0, transitive = 1, partial = 0} ->
+type_code(_Peer, Attrib, Flags, 3, NextHop) -> % whenFlags==#flags{optional = 0, transitive = 1, partial = 0} ->
     Attrib#attrib{next_hop = NextHop};
 % MULTI_EXIT_DISC
-type_code(Attrib, Flags, 4, <<MED:32>>) -> % whenFlags==#flags{optional = 1, transitive = 0, partial = 0}  -> 
+type_code(_Peer, Attrib, Flags, 4, <<MED:32>>) -> % whenFlags==#flags{optional = 1, transitive = 0, partial = 0}  -> 
     Attrib#attrib{med = MED};
 % LOCAL_PREF
-type_code(Attrib, Flags, 5, <<LocalPref:32>>) -> % when Flags==#flags{optional = 0, transitive = 1, partial = 0, ebgp = false} ->
+type_code(_Peer, Attrib, Flags, 5, <<LocalPref:32>>) -> % when Flags==#flags{optional = 0, transitive = 1, partial = 0, ebgp = false} ->
     Attrib#attrib{local_pref = LocalPref};
 % ATOMIC_AGGREGATE
-type_code(Attrib, Flags, 6, <<>>) -> % whenFlags==#flags{optional = 0, transitive = 1, partial = 0} ->
+type_code(_Peer, Attrib, Flags, 6, <<>>) -> % whenFlags==#flags{optional = 0, transitive = 1, partial = 0} ->
     Attrib#attrib{atomic_aggregate = true};
 % AGGREGATOR
-type_code(Attrib, Flags, 7, <<AS:16, IP:32>>) -> % whenFlags==#flags{optional = 1, transitive = 1}  ->
+type_code(_Peer, Attrib, Flags, 7, <<AS:16, IP:32>>) -> % whenFlags==#flags{optional = 1, transitive = 1}  ->
     Attrib#attrib{aggregator = {AS, IP}, aggregator_partial = Flags#flags.partial};
 % COMMUNITY
-type_code(Attrib, Flags, 8, Community) -> % whenFlags==#flags{optional = 1, transitive = 1}  ->
+type_code(_Peer, Attrib, Flags, 8, Community) -> % whenFlags==#flags{optional = 1, transitive = 1}  ->
     Attrib#attrib{community = decode_community(Community), community_partial = Flags#flags.partial};
-type_code(Attrib, Flags, Code, Data) when Flags#flags.optional == 1, Flags#flags.transitive == 1 -> %Flags==#flags{optional = 1, transitive = 1} ->
+type_code(_Peer, Attrib, Flags, Code, Data) when Flags#flags.optional == 1, Flags#flags.transitive == 1 -> %Flags==#flags{optional = 1, transitive = 1} ->
     log:debug("Unknown transitive attribute: ~p ~w~n", [Code, Data]),
     Attrib#attrib{unknown = [{Code, Data}|Attrib#attrib.unknown]};
-type_code(Attrib, Flags, Code, Data) when Flags#flags.optional == 0 -> %Flags==#flags{optional = 0, transitive = 1, partial = 0} ->
+type_code(_Peer, Attrib, Flags, Code, Data) when Flags#flags.optional == 0 -> %Flags==#flags{optional = 0, transitive = 1, partial = 0} ->
     log:err("Unknown well-known transitive attribute: ~p ~w~n", [Code, Data]),
     exit(unknown_attribute);
-%type_code(Attrib, Flags, Code, Data) when Flags==#flags{optional = 0, transitive = 0} ->
+%type_code(_Peer, Attrib, Flags, Code, Data) when Flags==#flags{optional = 0, transitive = 0} ->
 %    log:err("Well-known attribute w/o transitive: ~p ~p~n", [Code, Data]),
 %    exit(bad_attribute);
-type_code(Attrib, Flags, Code, Data) when Flags#flags.partial == 0 ->
+type_code(_Peer, Attrib, Flags, Code, Data) when Flags#flags.partial == 0 ->
     log:debug("Unknown non-transitive attribute: ~p ~w~n", [Code, Data]),
     Attrib;
-type_code(Attrib, Flags, Code, Data) ->
+type_code(_Peer, Attrib, Flags, Code, Data) ->
     log:err("Error in attribute: ~w ~w ~w ~w", [Attrib, Flags, Code, Data]),
     exit(bad_attribute).
 
@@ -92,7 +99,7 @@ decode_path_attributes(Peer, ?PATH_ATTRIBUTE, Attrib) ->
     <<Data:Real_Length/binary, Rest/binary>> = DataRest,
     Flags = #flags{optional=Optional, transitive=Transitive, partial=Partial, ebgp=Peer#peer.local_as /= Peer#peer.remote_as},
     log:debug("attribute: optional:~p, transitive:~p, partial:~p, type:~p, data:~w~n", [Optional, Transitive, Partial, Type_Code, Data]),
-    decode_path_attributes(Peer, Rest, type_code(Attrib, Flags, Type_Code, Data)).
+    decode_path_attributes(Peer, Rest, type_code(Peer, Attrib, Flags, Type_Code, Data)).
 decode_path_attributes(Peer, Path_Attribute) ->
     Attrib = decode_path_attributes(Peer, Path_Attribute, #attrib{}),
     if Attrib#attrib.origin == unknown; Attrib#attrib.as_path == unknown; Attrib#attrib.next_hop == unknown -> log:err("mandatory attribute missing: ~w~n", [Attrib]), exit(bad_attribute);
@@ -118,7 +125,7 @@ decode_capability(Peer, 2, <<>>) ->
 % Support for 4-octet AS number capability [RFC6793]
 decode_capability(Peer, 65, <<AS:32>>) ->
     log:info("Remote 32-bit AS: ~p~n", [AS]),
-    Peer;
+    Peer#peer{as4=true, remote_as=AS};
 decode_capability(Peer, Type, Value) ->
     log:info("unsupported capability: ~p ~w~n", [Type, Value]),
     Peer.
@@ -184,7 +191,10 @@ send_message(Peer, Type, Data) ->
     ok = gen_tcp:send(Peer#peer.sock, Packet).
 
 send_open(Peer) ->
-    Version = 4, AS = Peer#peer.local_as, Hold_time = Peer#peer.hold_time, ID = Peer#peer.local_id, Optional_parameters_length = 0, Optional_parameters = <<>>,
+    Version = 4, AS = Peer#peer.local_as, Hold_time = Peer#peer.hold_time, ID = Peer#peer.local_id,
+    AS4_cap = <<65, 4, AS:32>>,
+    Optional_parameters = <<2, 6, AS4_cap/binary>>,
+    Optional_parameters_length = byte_size(Optional_parameters),
     Open = ?OPEN_MESSAGE,
     send_message(Peer, 1, Open).
 
