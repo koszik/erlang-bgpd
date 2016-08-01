@@ -1,6 +1,7 @@
 -module(peer).
 -define(BGP_HEADER_SIZE, 19).
 -define(BGP_MARKER, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255).
+-define(AS_TRANS, 23456).
 -record(peer, {state, sock, hold_time, last_message_received, local_as, remote_as, local_id, remote_id, prefix_store_pid, remote_ip, vrf, as4 = false}). 
 -export([connect/5, keepalive/1]).
 -include("peer.hrl").
@@ -191,8 +192,9 @@ send_message(Peer, Type, Data) ->
     ok = gen_tcp:send(Peer#peer.sock, Packet).
 
 send_open(Peer) ->
-    Version = 4, AS = Peer#peer.local_as, Hold_time = Peer#peer.hold_time, ID = Peer#peer.local_id,
-    AS4_cap = <<65, 4, AS:32>>,
+    Version = 4, Hold_time = Peer#peer.hold_time, ID = Peer#peer.local_id,
+    AS = case Peer#peer.local_as of AS when AS =< 65536 -> AS; _ -> ?AS_TRANS end,
+    AS4_cap = <<65, 4, Peer#peer.local_as:32>>,
     Optional_parameters = <<2, 6, AS4_cap/binary>>,
     Optional_parameters_length = byte_size(Optional_parameters),
     Open = ?OPEN_MESSAGE,
