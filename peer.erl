@@ -90,7 +90,7 @@ decode_path_attributes(_Peer, <<>>, Attrib) ->
 decode_path_attributes(Peer, ?PATH_ATTRIBUTE, Attrib) ->
     Real_Length = ELength * 256 + Length,
     <<Data:Real_Length/binary, Rest/binary>> = DataRest,
-    Flags = #flags{optional=Optional, transitive=Transitive, partial=Partial, ebgp=Peer#peer.local_as == Peer#peer.remote_as},
+    Flags = #flags{optional=Optional, transitive=Transitive, partial=Partial, ebgp=Peer#peer.local_as /= Peer#peer.remote_as},
     log:debug("attribute: optional:~p, transitive:~p, partial:~p, type:~p, data:~w~n", [Optional, Transitive, Partial, Type_Code, Data]),
     decode_path_attributes(Peer, Rest, type_code(Attrib, Flags, Type_Code, Data)).
 decode_path_attributes(Peer, Path_Attribute) ->
@@ -146,7 +146,7 @@ parse_message(Peer, 1, ?OPEN_MESSAGE) when Peer#peer.state == init, Version == 4
 parse_message(Peer, 2, ?UPDATE_MESSAGE) when Peer#peer.state == established -> % Total_Path_Attribute_Length == 0 -> Network_Layer_Reachability_Information == <<>>
     WPeer = update(withdraw, Peer, Withdrawn_Routes, []),
     Attributes = decode_path_attributes(Peer, Path_Attributes),
-    update(announce, WPeer, Network_Layer_Reachability_Information, Attributes#attrib{ebgp = Peer#peer.local_as == Peer#peer.remote_as, received_at=now(), router_id = Peer#peer.remote_id});
+    update(announce, WPeer, Network_Layer_Reachability_Information, Attributes#attrib{ebgp = Peer#peer.local_as /= Peer#peer.remote_as, received_at=now(), router_id = Peer#peer.remote_id});
 % NOTIFICATION
 parse_message(_Peer, 3, <<Error_code:8, Error_subcode:8, Data/binary>>) ->
     log:err("got NOTIFICATION: ~p/~p, ~w~n", [Error_code, Error_subcode, Data]),
