@@ -44,7 +44,7 @@ select(Store, Elem, {Active, []}) ->
     [Best|_] = Active,
     case bestpath:compare_routes(Store, Best#route.attributes, Elem#route.attributes) of
 	first -> {Active, [Elem]};
-	multipath_first -> {Active ++ [Elem], []}
+	{multipath, first} -> {Active ++ [Elem], []}
     end;
 select(_Store, Elem, {Active, Inactive}) -> {Active, Inactive ++ [Elem]}.
 
@@ -114,7 +114,7 @@ replace_prefix(Store, Pid, Prefix, Attributes) ->
     RoutesAfterDel = del_route(Store, Pid, OldRoutes),
     NewRoutes = add_route(Store, Pid, RoutesAfterDel, Attributes),
     {[NewBest|_], _} = NewRoutes,
-    if  OldBest =/= NewBest -> send_updates(announce, Store, Prefix, Attributes);
+    if  OldBest =/= NewBest -> send_updates(announce, Store, Prefix, NewBest#route.attributes);
 	OldBest =:= NewBest -> true
     end,
     store_set(Store, Prefix, NewRoutes).
@@ -153,9 +153,10 @@ init(VRF) ->
 
 print_prefix(_, _, []) -> ok;
 print_prefix(Prefix, C, [Route|Rest]) ->
-    io:format("~s~w => ~w ~w ~w ~w ~w~n",
+    io:format("~s~w => ~w ~w ~w ~w ~w ~w~n",
 	    [C, Prefix,
-	    Route#route.attributes#attrib.next_hop, Route#route.attributes#attrib.local_pref, Route#route.attributes#attrib.as_path, Route#route.attributes#attrib.origin, Route#route.attributes#attrib.community]),
+	    Route#route.attributes#attrib.next_hop, Route#route.attributes#attrib.local_pref, Route#route.attributes#attrib.as_path, Route#route.attributes#attrib.origin, Route#route.attributes#attrib.community,
+	    Route#route.attributes#attrib.received_at]),
     print_prefix(Prefix, C, Rest).
 
 show_prefix(N) ->
@@ -171,6 +172,7 @@ show_prefix(N) ->
 show(Pid, {Prefix, Length}) ->
     Pid ! {get_prefix, {Prefix, Length}, self()},
     io:format("BGP table:~n", []),
+    io:format(" Network => Nexthop local_pref             as_path          communities         received_at~n", []),
     show_prefix(0);
 show(Pid, verbose) ->
     Pid ! {get_store, self()},
