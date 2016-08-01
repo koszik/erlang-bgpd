@@ -33,6 +33,11 @@ decode_as_path(<<Type:8, Length:8, Value:Length/binary-unit:16, Rest/binary>>) w
     [{Type_atom, unfold_ases(Value)}|decode_as_path(Rest)].
 
 
+decode_communities(<<>>) -> [];
+decode_communities(<<C:32, Rest/binary>>) -> [C|decode_communities(Rest)].
+decode_community(C) ->
+    lists:sort(decode_communities(C)).
+
 -record(flags, {optional, transitive, partial, ebgp}).
 % ORIGIN
 type_code(Attrib, Flags, 1, <<Origin:8>>) -> %when Flags==#flags{optional = 0, transitive = 1, partial = 0} ->
@@ -60,7 +65,9 @@ type_code(Attrib, Flags, 6, <<>>) -> % whenFlags==#flags{optional = 0, transitiv
 % AGGREGATOR
 type_code(Attrib, Flags, 7, <<AS:16, IP:32>>) -> % whenFlags==#flags{optional = 1, transitive = 1}  ->
     Attrib#attrib{aggregator = {AS, IP}, aggregator_partial = Flags#flags.partial};
-
+% COMMUNITY
+type_code(Attrib, Flags, 8, Community) -> % whenFlags==#flags{optional = 1, transitive = 1}  ->
+    Attrib#attrib{community = decode_community(Community), community_partial = Flags#flags.partial};
 type_code(Attrib, Flags, Code, Data) when Flags#flags.optional == 1, Flags#flags.transitive == 1 -> %Flags==#flags{optional = 1, transitive = 1} ->
     log:debug("Unknown transitive attribute: ~p ~w~n", [Code, Data]),
     Attrib#attrib{unknown = [{Code, Data}|Attrib#attrib.unknown]};
