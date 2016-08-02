@@ -1,6 +1,6 @@
 -module(prefix_store).
 -export([prefix_store/1, show/1, show/2]).
--record(store, {vrf, prefixes, maximum_prefixes}).
+-record(store, {vrf, prefixes, maximum_prefixes, vrfstore_active}).
 -include("peer.hrl").
 
 get_prefix(Prefixes, Key) ->
@@ -10,28 +10,29 @@ get_prefix(Prefixes, Key) ->
     end.
 
 
-vrfstore_send(Store, Msg) ->
-    Destination = list_to_atom("vrf_store_"++Store#store.vrf),
-    catch(Destination ! Msg).
+vrfstore_send(Store, Msg) when Store#store.vrfstore_active == true ->
+    process_manager:cast({vrf_store, {Store#store.vrf}}, Msg);
+vrfstore_send(_Store, _Msg) ->
+    ok.
 
 
-add_prefix(Store, Prefix, Length, Attribs) ->
-    case catch(gb_trees:insert({Prefix, Length}, Attribs, Store#store.prefixes)) of
+add_prefix(Store, Prefix, Attribs) ->
+    case catch(gb_trees:insert(Prefix, Attribs, Store#store.prefixes)) of
 	{'EXIT', _} ->
 	    %log:debug("update ~w~n", [[Prefix, Length]]),
-	    vrfstore_send(Store, {update, self(), {Prefix, Length}, Attribs}),
-	    gb_trees:enter({Prefix, Length}, Attribs, Store#store.prefixes);
+	    vrfstore_send(Store, {update, self(), Prefix, Attribs}),
+	    gb_trees:enter(Prefix, Attribs, Store#store.prefixes);
 	Tree ->
-	    vrfstore_send(Store, {announce, self(), {Prefix, Length}, Attribs}),
+	    vrfstore_send(Store, {announce, self(), Prefix, Attribs}),
 	    Tree
     end.
 
 
-remove_prefix(Store, Prefix, Length) ->
-    case gb_trees:is_defined({Prefix, Length}, Store#store.prefixes) of
-	true ->  vrfstore_send(Store, {withdraw, self(), {Prefix, Length}}),
-		 gb_trees:delete({Prefix, Length}, Store#store.prefixes);
-	false -> log:info("prefix not found in tree! ~w~n",[{Prefix, Length}]), Store#store.prefixes
+remove_prefix(Store, Prefix) ->
+    case gb_trees:is_defined(Prefix, Store#store.prefixes) of
+	true ->  vrfstore_send(Store, {withdraw, self(), Prefix}),
+		 gb_trees:delete(Prefix, Store#store.prefixes);
+	false -> log:err("prefix not found in tree! ~w~n",[Prefix]), Store#store.prefixes
     end.
 
 
@@ -55,15 +56,18 @@ prefix_store(VRF) when is_list(VRF) ->
 prefix_store(Store) when is_record(Store, store) ->
     ?MODULE:prefix_store(
     receive
-	{announce, Prefix, Length, Attribs} ->
+	{announce, Prefix, Attribs} ->
 	    Size = store_size(Store#store.prefixes),
 	    if Store#store.maximum_prefixes /= undefined, Size >= Store#store.maximum_prefixes ->
 		log:err("~p maximum prefixes (~p) reached, exiting~n", [self(), Store#store.maximum_prefixes]),
 		exit(maximum_prefixes);
-		true -> Store#store{prefixes = add_prefix(Store, Prefix, Length, Attribs)}
+		true -> Store#store{prefixes = add_prefix(Store, Prefix, Attribs)}
 	    end;
-	{withdraw, Prefix, Length, _Attribs} ->
-	    Store#store{prefixes = remove_prefix(Store, Prefix, Length)};
+	{withdraw, Prefix, _Attribs} ->
+	    Store#store{prefixes = remove_prefix(Store, Prefix)};
+	{vrf_store_init, Pid} ->
+	    store_iter(fun(Prefix, Attribs, _) -> Pid ! {announce, self(), Prefix, Attribs} end, [], Store#store.prefixes),
+	    Store#store{vrfstore_active = true};
 	{get_prefix, Prefix, Pid} ->
 	    Pid ! {transfer_store, {Prefix, get_prefix(Store#store.prefixes, Prefix)}},
 	    Pid ! eof,

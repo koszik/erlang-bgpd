@@ -14,7 +14,7 @@ update(Operation, Peer, <<Length:8, Prefix:Length/bitstring, Rest/bitstring>>, A
     Unused_Length = mod(8-Length, 8),
     <<_Unused:Unused_Length/bitstring, NewRest/binary>> = Rest,
     PaddedPrefix = <<Prefix/bitstring, 0:Unused_Length>>,
-    Peer#peer.prefix_store_pid ! {Operation, PaddedPrefix, Length, Attributes},
+    Peer#peer.prefix_store_pid ! {Operation, {PaddedPrefix, Length}, Attributes},
     log:debug("~w~n", [[Attributes, Operation, PaddedPrefix, Length]]),
     update(Operation, Peer, NewRest, Attributes).
 
@@ -214,11 +214,12 @@ keepalive(Peer) ->
 %%%
 
 connect(VRF, PeerAddress, AS, Hold_Time, ID) ->
-    register(list_to_atom("peer_"++VRF++"_"++PeerAddress), self()),
+    ok = process_manager:register({peer, {VRF, PeerAddress}}),
     {ok, Sock} = gen_tcp:connect(PeerAddress, 179, [binary, {active, false}, {packet, raw}]),
     Peer_skel = #peer{sock=Sock, state=init, vrf = VRF, local_as = AS, hold_time = Hold_Time, local_id = ID, remote_ip = PeerAddress},
     StorePid = spawn_link(prefix_store, prefix_store, [VRF]),
-    register(list_to_atom("peer_store_"++VRF++"_"++PeerAddress), StorePid),
+    ok = process_manager:register({prefix_store, {VRF, PeerAddress}}, StorePid),
     Peer = Peer_skel#peer{prefix_store_pid = StorePid},
+    vrf_store:new_peer(VRF, StorePid),
     send_open(Peer),
     read_header(Peer).

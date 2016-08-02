@@ -1,6 +1,6 @@
 % Calculate/announce best paths for a VRF.
 -module(vrf_store).
--export([init/1, vrf_store/1, show/1, show/2]).
+-export([init/1, vrf_store/1, show/1, show/2, new_peer/2, start/1]).
 -record(store, {vrf, prefixes}).
 -include("peer.hrl").
 % Store#store -> {active, inactive} = routes
@@ -57,7 +57,7 @@ remove_peer_route(Prefix, {Active, Inactive}, {Store, Prefixes, Pid}) ->
     end.
 
 remove_peer(Store, Pid) ->
-    {_, _, NewPrefixes} = gb_fold(fun remove_peer_route/3, {Store, gb_trees:empty(), Pid}, Store#store.prefixes),
+    {_, NewPrefixes, _} = gb_fold(fun remove_peer_route/3, {Store, gb_trees:empty(), Pid}, Store#store.prefixes),
     Store#store{prefixes = NewPrefixes}.
 
 %% TODO: don't re-sort
@@ -140,10 +140,12 @@ vrf_store(Store) ->
 	{withdraw, Pid, Prefix} ->
 	    remove_prefix(Store, Pid, Prefix);
 	{'DOWN', _Ref, process, Pid, Reason} ->
-	    log:err("~p died: ~p~n", Pid, Reason),
+	    log:err("~p died: ~p~n", [Pid, Reason]),
 	    remove_peer(Store, Pid);
 	{new_peer, Pid} ->
-	    erlang:monitor(Pid);
+	    Pid ! {vrf_store_init, self()},
+	    erlang:monitor(process, Pid),
+	    Store;
 	{get_prefix, Prefix, Pid} ->
 	    Pid ! {transfer_store, {Prefix, store_get_all_routes(Store, Prefix)}},
 	    Pid ! {transfer_eof, undefined},
@@ -161,9 +163,16 @@ vrf_store(Store) ->
     end).
 
 
-% get all peers in this vrf; Pid ! {vrf_store_start, self()}, erlang:monitor(Pid)
 init(VRF) ->
-    register(list_to_atom("vrf_store_"++VRF), spawn(?MODULE, vrf_store, [#store{prefixes=store_init()}])).
+    ok = process_manager:register({vrf_store, {VRF}}),
+    lists:foldl(fun(Pid, _) -> Pid ! {vrf_store_init, self()}, erlang:monitor(process, Pid) end, [], lists:flatten(ets:match(process_store, {{prefix_store, {VRF, '_'}}, '$1'}))),
+    vrf_store(#store{prefixes=store_init()}).
+
+start(VRF) ->
+    spawn(?MODULE, init, [VRF]).
+
+new_peer(VRF, Pid) ->
+    process_manager:cast({vrf_store, {VRF}}, {new_peer, Pid}).
 
 print_prefix(_, _, []) -> ok;
 print_prefix(Prefix, C, [Route|Rest]) ->
@@ -175,7 +184,7 @@ print_prefix(Prefix, C, [Route|Rest]) ->
 
 show_prefix(N) ->
     receive
-	{transfer_store, {Prefix, {[], []}}} -> io:format("prefix not found~n"), show_prefix(N);
+	{transfer_store, {_Prefix, {[], []}}} -> io:format("prefix not found~n"), show_prefix(N);
 	{transfer_store, {Prefix, {Active, Inactive}}} -> print_prefix(Prefix, "*", Active), print_prefix(Prefix, " ", Inactive), show_prefix(N+1);
 	{transfer_eof, X} -> io:format("~p/~p prefixes total~n", [N, X]);
 	M ->
@@ -183,8 +192,8 @@ show_prefix(N) ->
     after 5000 -> timeout
     end.
 
-show(Pid, {Prefix, Length}) ->
-    Pid ! {get_prefix, {Prefix, Length}, self()},
+show(VRF, {Prefix, Length}) ->
+    process_manager:getpid({vrf_store, {VRF}}) ! {get_prefix, {Prefix, Length}, self()},
     io:format("BGP table:~n", []),
     io:format(" Network => Nexthop local_pref             as_path          communities         received_at~n", []),
     show_prefix(0);
