@@ -1,7 +1,7 @@
 % Calculate/announce best paths for a VRF.
 -module(vrf_store).
 -export([init/1, vrf_store/1, show/1, show/2]).
--record(store, {vrf, active, inactive, filtered}).
+-record(store, {vrf, prefixes}).
 -include("peer.hrl").
 % Store#store -> {active, inactive} = routes
 % routes = [#route, ...]
@@ -9,21 +9,15 @@
 -record(route, {attributes, pid}).
 
 
-store_set(Store, Key, {Active, Inactive}) ->
-    S1 = Store#store{active = gb_trees:enter(Key, Active, Store#store.active)},
-    S1#store{inactive = gb_trees:enter(Key, Inactive, S1#store.inactive)}.
+store_set(Store, Key, Data) ->
+    Store#store{prefixes = gb_trees:enter(Key, Data, Store#store.prefixes)}.
 
+% {active, inactive}
 store_get_all_routes(Store, Key) ->
-    {
-    case gb_trees:is_defined(Key, Store#store.active) of
-	true -> gb_trees:get(Key, Store#store.active);
-	false -> []
-    end,
-    case gb_trees:is_defined(Key, Store#store.inactive) of
-	true -> gb_trees:get(Key, Store#store.inactive);
-	false -> []
-    end
-    }.
+    case gb_trees:is_defined(Key, Store#store.prefixes) of
+	true -> gb_trees:get(Key, Store#store.prefixes);
+	false -> {[], []}
+    end.
 
 store_size(Prefixes) ->
     gb_trees:size(Prefixes).
@@ -39,6 +33,7 @@ gb_fold(Fun, Acc, Prefixes) ->
     gb_fold(Fun, Acc, gb_trees:next(gb_trees:iterator(Prefixes))).
 
 
+
 select(_Store, Elem, {[], []}) -> {[Elem], []};
 select(Store, Elem, {Active, []}) ->
     [Best|_] = Active,
@@ -50,8 +45,20 @@ select(_Store, Elem, {Active, Inactive}) -> {Active, Inactive ++ [Elem]}.
 
 
 del_route(Store, Pid, {OldActive, OldInactive}) ->
-    Routes = lists:filter(fun(R) -> R#route.pid /= Pid end, OldActive ++ OldInactive),
+    Routes = [R || R <- OldActive ++ OldInactive, R#route.pid /= Pid],
     lists:foldl(fun(E, A) ->  select(Store, E, A) end, {[], []}, Routes).
+
+remove_peer_route(Prefix, {Active, Inactive}, {Store, Prefixes, Pid}) ->
+    Update =  (hd(Active))#route.pid == Pid,
+    New = del_route(Store, Pid, {Active, Inactive}),
+    case New of
+	{[], []} -> if Update -> send_updates(withdraw, Store, Prefix); true -> true end, {Store, Prefixes, Pid};
+	{[NewBest|_], _} -> if Update -> send_updates(announce, Store, Prefix, NewBest#route.attributes); true -> true end, {Store, gb_trees:insert(Prefix, New, Prefixes), Pid}
+    end.
+
+remove_peer(Store, Pid) ->
+    {_, _, NewPrefixes} = gb_fold(fun remove_peer_route/3, {Store, gb_trees:empty(), Pid}, Store#store.prefixes),
+    Store#store{prefixes = NewPrefixes}.
 
 %% TODO: don't re-sort
 add_route(Store, Pid, {OldActive, OldInactive}, Attributes) ->
@@ -132,12 +139,17 @@ vrf_store(Store) ->
 	    replace_prefix(Store, Pid, Prefix, Attribs);
 	{withdraw, Pid, Prefix} ->
 	    remove_prefix(Store, Pid, Prefix);
+	{'DOWN', _Ref, process, Pid, Reason} ->
+	    log:err("~p died: ~p~n", Pid, Reason),
+	    remove_peer(Store, Pid);
+	{new_peer, Pid} ->
+	    erlang:monitor(Pid);
 	{get_prefix, Prefix, Pid} ->
 	    Pid ! {transfer_store, {Prefix, store_get_all_routes(Store, Prefix)}},
 	    Pid ! {transfer_eof, undefined},
 	    Store;
 	{get_store_size, Pid} ->
-	    Pid ! {store_size, store_size(Store#store.active)},
+	    Pid ! {store_size, store_size(Store#store.prefixes)},
 	    Store;
 	{get_store, _Pid} ->
 %	    N = store_iter(fun(Key, Value, AccIn) -> Pid ! {transfer_store, {Key, Value}}, AccIn+1 end, 0, Store#store.prefixes),
@@ -148,8 +160,10 @@ vrf_store(Store) ->
 	    Store
     end).
 
+
+% get all peers in this vrf; Pid ! {vrf_store_start, self()}, erlang:monitor(Pid)
 init(VRF) ->
-    register(list_to_atom("vrf_store_"++VRF), spawn(?MODULE, vrf_store, [#store{active=store_init(), inactive=store_init()}])).
+    register(list_to_atom("vrf_store_"++VRF), spawn(?MODULE, vrf_store, [#store{prefixes=store_init()}])).
 
 print_prefix(_, _, []) -> ok;
 print_prefix(Prefix, C, [Route|Rest]) ->
