@@ -176,9 +176,10 @@ new_peer(VRF, Pid) ->
 
 print_prefix(_, _, []) -> ok;
 print_prefix(Prefix, C, [Route|Rest]) ->
-    io:format("~s~w => ~w ~w ~w ~w ~w ~w~n",
-	    [C, Prefix,
-	    Route#route.attributes#attrib.next_hop, Route#route.attributes#attrib.local_pref, Route#route.attributes#attrib.as_path, Route#route.attributes#attrib.origin, Route#route.attributes#attrib.community,
+    io:format("~s~s => ~s ~w ~w ~w ~w ~w~n",
+	    [C, util:prefix_to_list(1, Prefix),
+	    util:ip_to_list(1, Route#route.attributes#attrib.next_hop),
+	    Route#route.attributes#attrib.local_pref, Route#route.attributes#attrib.as_path, Route#route.attributes#attrib.origin, Route#route.attributes#attrib.community,
 	    Route#route.attributes#attrib.received_at]),
     print_prefix(Prefix, C, Rest).
 
