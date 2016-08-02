@@ -193,8 +193,8 @@ send_message(Peer, Type, Data) ->
 
 send_open(Peer) ->
     Version = 4, Hold_time = Peer#peer.hold_time, ID = Peer#peer.local_id,
-    AS = case Peer#peer.local_as of AS when AS =< 65536 -> AS; _ -> ?AS_TRANS end,
-    AS4_cap = <<65, 4, Peer#peer.local_as:32>>,
+    AS = case Peer#peer.local_as of A when A =< 65536 -> A; _ -> ?AS_TRANS end,
+    AS4_cap = <<65, 4, (Peer#peer.local_as):32>>,
     Optional_parameters = <<2, 6, AS4_cap/binary>>,
     Optional_parameters_length = byte_size(Optional_parameters),
     Open = ?OPEN_MESSAGE,
