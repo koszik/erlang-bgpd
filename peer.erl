@@ -1,6 +1,6 @@
 -module(peer).
 -define(BGP_HEADER_SIZE, 19).
--define(BGP_MARKER, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255).
+-define(BGP_MARKER, -1:16/unit:8).
 -define(AS_TRANS, 23456).
 -record(peer, {state, sock, hold_time, last_message_received, local_as, remote_as, local_id, remote_id, prefix_store_pid, remote_ip, vrf, as4 = false}). 
 -export([connect/5, keepalive/1]).
@@ -169,7 +169,7 @@ parse_message(Peer, 4, <<>>) when Peer#peer.state /= init ->
 
 %%%%%%%%%%%%%% HEADER level functions
 
-parse_header(Peer, << Marker:16/binary, Length:16, Type:8 >>) when Marker == <<?BGP_MARKER>>, Length >= ?BGP_HEADER_SIZE, Length =< 4096, Type >= 1, Type =< 4 ->
+parse_header(Peer, << ?BGP_MARKER, Length:16, Type:8 >>) when Length =< 4096 ->
     Read_Length = Length - ?BGP_HEADER_SIZE,
     {ok, Data} = if Read_Length > 0 -> gen_tcp:recv(Peer#peer.sock, Read_Length);
 		    true -> {ok, <<>>}
@@ -186,8 +186,7 @@ read_header(Peer) ->
 
 send_message(Peer, Type, Data) ->
     Length = byte_size(Data) + ?BGP_HEADER_SIZE,
-    Marker = <<?BGP_MARKER>>,
-    Packet = <<Marker/binary, Length:16, Type:8, Data/binary>>,
+    Packet = <<?BGP_MARKER, Length:16, Type:8, Data/binary>>,
     log:debug("send data: ~w~n", [Packet]),
     ok = gen_tcp:send(Peer#peer.sock, Packet).
 
