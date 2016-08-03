@@ -63,11 +63,14 @@ prefix_store(Store) when is_record(Store, store) ->
 		exit(maximum_prefixes);
 		true -> Store#store{prefixes = add_prefix(Store, Prefix, Attribs)}
 	    end;
-	{withdraw, Prefix, _Attribs} ->
+	{withdraw, Prefix, []} ->
 	    Store#store{prefixes = remove_prefix(Store, Prefix)};
 	{vrf_store_init, Pid} ->
 	    store_iter(fun(Prefix, Attribs, _) -> Pid ! {announce, self(), Prefix, Attribs} end, [], Store#store.prefixes),
 	    Store#store{vrfstore_active = true};
+	{announce, _Pid, Prefix, Attribs} -> Store;
+	{update, _Pid, Prefix, Attribs} -> Store;
+	{withdraw, _Pid, Prefix} -> Store;
 	{get_prefix, Prefix, Pid} ->
 	    Pid ! {transfer_store, {Prefix, get_prefix(Store#store.prefixes, Prefix)}},
 	    Pid ! eof,
