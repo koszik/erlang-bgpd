@@ -1,7 +1,7 @@
 % Calculate/announce best paths for a VRF.
 -module(vrf_store).
 -export([init/1, vrf_store/1, show/1, show/2, new_peer/2, start/1]).
--record(store, {vrf, prefixes, outpids=[]}).
+-record(store, {vrf, prefixes, outpids=[], wait_for_store_pids=[]}).
 -include("peer.hrl").
 % Store#store -> {active, inactive} = routes
 % routes = [#route, ...]
@@ -49,7 +49,7 @@ remove_peer_route(Prefix, {Active, Inactive}, {Store, Prefixes, Pid}) ->
     Update =  (hd(Active))#route.pid == Pid,
     New = del_route(Store, Pid, {Active, Inactive}),
     case New of
-	{[], []} -> if Update -> send_updates(withdraw, Store, Prefix); true -> true end, {Store, Prefixes, Pid};
+	{[], []} -> if Update -> send_updates(withdraw, Store, Pid, Prefix); true -> true end, {Store, Prefixes, Pid};
 	{[NewBest|_], _} -> if Update -> send_updates(update, Store, Prefix, NewBest#route.attributes); true -> true end, {Store, gb_trees:insert(Prefix, New, Prefixes), Pid}
     end.
 
@@ -72,12 +72,12 @@ add_route(Store, Pid, {OldActive, OldInactive}, Attributes) ->
 
 
 
-send_updates(Type, Store, Prefix, Attributes) when Type == announce ; Type == update ->
+send_updates(Type, Store, Pid, Prefix, Attributes) when Type == announce ; Type == update ->
     log:info("~s: ~w [~w]~n", [atom_to_list(Type), Prefix, Attributes]),
-    lists:foldl(fun(Pid, _) -> Pid ! {Type, self(), Prefix, Attributes} end, [], Store#store.outpids).
-send_updates(withdraw, Store, Prefix) ->
+    [P ! {Type, self(), Prefix, Attributes} || P <- Store#store.outpids, P /= Pid].
+send_updates(withdraw, Store, Pid, Prefix) ->
     log:info("withdraw: ~w~n", [Prefix]),
-    lists:foldl(fun(Pid, _) -> Pid ! {withdraw, self(), Prefix} end, [], Store#store.outpids).
+    [P ! {withdraw, self(), Prefix} || P <- Store#store.outpids, P /= Pid].
 
 %% TODO: multipath is not advertised to rib
 
@@ -91,8 +91,8 @@ remove_prefix(Store, Pid, Prefix) ->
 	      end,
     if  OldBest =/= NewBest ->
 		case NewBest of
-		    undefined -> send_updates(withdraw, Store, Prefix);
-		    NewBest   -> send_updates(update, Store, Prefix, NewBest#route.attributes)
+		    undefined -> send_updates(withdraw, Store, Pid, Prefix);
+		    NewBest   -> send_updates(update, Store, Pid, Prefix, NewBest#route.attributes)
 		end;
 	OldBest =:= NewBest -> true
     end,
@@ -107,7 +107,7 @@ add_prefix(Store, Pid, Prefix, Attributes) ->
 	      end,
     NewRoutes = add_route(Store, Pid, OldRoutes, Attributes),
     {[NewBest|_], _} = NewRoutes,
-    if  OldBest =/= NewBest -> send_updates(announce, Store, Prefix, Attributes);
+    if  OldBest =/= NewBest -> send_updates(announce, Store, Pid, Prefix, Attributes);
 	OldBest =:= NewBest -> true
     end,
     store_set(Store, Prefix, NewRoutes).
@@ -119,7 +119,11 @@ replace_prefix(Store, Pid, Prefix, Attributes) ->
     RoutesAfterDel = del_route(Store, Pid, OldRoutes),
     NewRoutes = add_route(Store, Pid, RoutesAfterDel, Attributes),
     {[NewBest|_], _} = NewRoutes,
-    if  OldBest =/= NewBest -> send_updates(update, Store, Prefix, NewBest#route.attributes);
+    if  OldBest =/= NewBest ->
+	    if OldBest#route.pid /= NewBest#route.pid -> NewBest#route.pid ! {withdraw, self(), Prefix};
+	       true -> ok
+	    end,
+	    send_updates(update, Store, Pid, Prefix, NewBest#route.attributes);
 	OldBest =:= NewBest -> true
     end,
     store_set(Store, Prefix, NewRoutes).
@@ -139,10 +143,18 @@ vrf_store(Store) ->
 	    replace_prefix(Store, Pid, Prefix, Attribs);
 	{withdraw, Pid, Prefix} ->
 	    remove_prefix(Store, Pid, Prefix);
+	{eof, Pid} ->
+	    WaitPids = [X || X <- Store#store.wait_for_store_pids, X /= Pid],
+	    case WaitPids of
+		[] -> [X ! {eof, self()} || X <- Store#store.outpids];
+		_ -> ok
+	    end,
+	    Store#store{wait_for_store_pids = WaitPids};
 	{'DOWN', _Ref, process, Pid, Reason} ->
 	    log:err("~p died: ~p~n", [Pid, Reason]),
 	    NewStore = remove_peer(Store, Pid),
-	    NewStore#store{outpids = [X || X <- NewStore#store.outpids, X /= Pid]};
+	    NewStore#store{ outpids = [X || X <- NewStore#store.outpids, X /= Pid],
+			    wait_for_store_pids = [X || X <- NewStore#store.wait_for_store_pids, X /= Pid]};
 	{new_peer, Pid} ->
 	    Pid ! {vrf_store_init, self()},
 	    erlang:monitor(process, Pid),
@@ -167,10 +179,10 @@ vrf_store(Store) ->
 
 init(VRF) ->
     ok = process_manager:register({vrf_store, {VRF}}),
-    OutPids = lists:flatten(ets:match(process_store, {{prefix_store, {VRF, '_'}}, '$1'})) ++
-	      lists:flatten(ets:match(process_store, {{rib, {VRF}}, '$1'})),
-    lists:foldl(fun(Pid, _) -> Pid ! {vrf_store_init, self()}, erlang:monitor(process, Pid) end, [], OutPids),
-    vrf_store(#store{prefixes=store_init(), outpids=OutPids}).
+    PeerPids = lists:flatten(ets:match(process_store, {{prefix_store, {VRF, '_'}}, '$1'})) ++
+	       lists:flatten(ets:match(process_store, {{rib, {VRF}}, '$1'})),
+    lists:foldl(fun(Pid, _) -> Pid ! {vrf_store_init, self()}, erlang:monitor(process, Pid) end, [], PeerPids),
+    vrf_store(#store{prefixes=store_init(), outpids=PeerPids, wait_for_store_pids=PeerPids}).
 
 start(VRF) ->
     spawn(?MODULE, init, [VRF]).

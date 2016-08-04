@@ -1,6 +1,6 @@
 -module(prefix_store).
 -export([prefix_store/1, show/1, show/2]).
--record(store, {vrf, prefixes, maximum_prefixes, vrfstore_active}).
+-record(store, {vrf, peer, prefixes, out_prefixes, maximum_prefixes, vrf_store}).
 -include("peer.hrl").
 
 get_prefix(Prefixes, Key) ->
@@ -10,8 +10,8 @@ get_prefix(Prefixes, Key) ->
     end.
 
 
-vrfstore_send(Store, Msg) when Store#store.vrfstore_active == true ->
-    process_manager:cast({vrf_store, {Store#store.vrf}}, Msg);
+vrfstore_send(Store, Msg) when is_pid(Store#store.vrf_store) ->
+    Store#store.vrf_store ! Msg;
 vrfstore_send(_Store, _Msg) ->
     ok.
 
@@ -19,7 +19,6 @@ vrfstore_send(_Store, _Msg) ->
 add_prefix(Store, Prefix, Attribs) ->
     case catch(gb_trees:insert(Prefix, Attribs, Store#store.prefixes)) of
 	{'EXIT', _} ->
-	    %log:debug("update ~w~n", [[Prefix, Length]]),
 	    vrfstore_send(Store, {update, self(), Prefix, Attribs}),
 	    gb_trees:enter(Prefix, Attribs, Store#store.prefixes);
 	Tree ->
@@ -34,6 +33,39 @@ remove_prefix(Store, Prefix) ->
 		 gb_trees:delete(Prefix, Store#store.prefixes);
 	false -> log:err("prefix not found in tree! ~w~n",[Prefix]), Store#store.prefixes
     end.
+
+
+add_out_prefix(Store, Prefix, Attribs) ->
+    peer:send_update(update, Store#store.peer, Prefix, Attribs),
+    Store#store{out_prefixes = case catch(gb_trees:insert(Prefix, Store#store.vrf_store, Store#store.out_prefixes)) of
+	{'EXIT', _} ->
+	    gb_trees:enter(Prefix, Attribs, Store#store.out_prefixes);
+	Tree ->
+	    Tree
+    end}.
+
+update_out_prefix(Store, Prefix, Attribs) ->
+    peer:send_update(update, Store#store.peer, Prefix, Attribs),
+    Store#store{out_prefixes = gb_trees:enter(Prefix, Store#store.vrf_store, Store#store.out_prefixes)}.
+
+
+remove_out_prefix(Store, Prefix) ->
+    Store#store{out_prefixes = case gb_trees:is_defined(Prefix, Store#store.prefixes) of
+	true ->  peer:send_update(withdraw, Store#store.peer, Prefix),
+		 gb_trees:delete(Prefix, Store#store.out_prefixes);
+	false -> log:err("prefix not found in out tree! ~w~n",[Prefix]), Store#store.out_prefixes
+    end}.
+
+
+remove_old_prefixes(Store) ->
+    P = Store#store.vrf_store,
+    Store#store{out_prefixes=gb_trees:filtermap(
+	fun({Prefix, Value}) ->
+		case Value of
+		    P -> ok;
+		    _ -> peer:send_update(withdraw, Store#store.peer, Prefix)
+		end
+	    end,    Store#store.out_prefixes)}.
 
 
 store_size(Prefixes) ->
@@ -52,7 +84,10 @@ store_iter(Fun, Acc, Prefixes) ->
 
 
 prefix_store(VRF) when is_list(VRF) ->
-    prefix_store(#store{vrf=VRF, prefixes=store_init()});
+    receive
+	{peer_state, Peer} -> prefix_store(#store{vrf=VRF, peer=Peer, prefixes=store_init(), out_prefixes=store_init()})
+    end;
+
 prefix_store(Store) when is_record(Store, store) ->
     ?MODULE:prefix_store(
     receive
@@ -67,10 +102,11 @@ prefix_store(Store) when is_record(Store, store) ->
 	    Store#store{prefixes = remove_prefix(Store, Prefix)};
 	{vrf_store_init, Pid} ->
 	    store_iter(fun(Prefix, Attribs, _) -> Pid ! {announce, self(), Prefix, Attribs} end, [], Store#store.prefixes),
-	    Store#store{vrfstore_active = true};
-	{announce, _Pid, Prefix, Attribs} -> Store;
-	{update, _Pid, Prefix, Attribs} -> Store;
-	{withdraw, _Pid, Prefix} -> Store;
+	    Store#store{vrf_store = Pid};
+	{announce, _Pid, Prefix, Attribs} -> add_out_prefix(Store, Prefix, Attribs);
+	{update, _Pid, Prefix, Attribs} -> update_out_prefix(Store, Prefix, Attribs);
+	{withdraw, _Pid, Prefix} -> remove_out_prefix(Store, Prefix);
+	{eof, _Pid} -> remove_old_prefixes(Store);
 	{get_prefix, Prefix, Pid} ->
 	    Pid ! {transfer_store, {Prefix, get_prefix(Store#store.prefixes, Prefix)}},
 	    Pid ! eof,
