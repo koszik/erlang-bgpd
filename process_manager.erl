@@ -1,7 +1,7 @@
 -module(process_manager).
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, code_change/3, terminate/2]).
--export([start/0, register/1, register/2, cast/2, getpid/1]).
+-export([start/0, register/1, register/2, cast/2, show/1]).
 
 handle_call({register, ID, Pid}, _From, State) ->
     case ets:insert_new(process_store, {ID, Pid}) of
@@ -57,3 +57,6 @@ cast(Selector, Msg) ->
 
 start() ->
     gen_server:start({local, ?MODULE}, ?MODULE, [], []).
+
+show(all) ->
+    ets:match(process_store, '$1').
