@@ -169,7 +169,8 @@ parse_message(Peer, 4, <<>>) when Peer#peer.state /= init ->
 
 %%%%%%%%%%%%%% HEADER level functions
 
-parse_header(Peer, << ?BGP_MARKER, Length:16, Type:8 >>) when Length =< 4096 ->
+% ?? parse_header(Peer, << ?BGP_MARKER, Length:16, Type:8 >>) when Length =< 4096 ->
+parse_header(Peer, << Marker:16/binary, Length:16, Type:8 >>) when Marker == <<?BGP_MARKER>>, Length =< 4096 ->
     Read_Length = Length - ?BGP_HEADER_SIZE,
     {ok, Data} = if Read_Length > 0 -> gen_tcp:recv(Peer#peer.sock, Read_Length);
 		    true -> {ok, <<>>}
