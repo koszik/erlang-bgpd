@@ -11,23 +11,23 @@ handle_call(Msg, From, State) ->
 
 
 handle_info({announce, _Pid, Prefix, Attribs}, State) ->
-    log:info("announce: ~w~n", [[Prefix, Attribs]]),
+    log:debug("announce: ~w~n", [[Prefix, Attribs]]),
     os:cmd("ip ro add "++util:prefix_to_list(1, Prefix)++" via "++util:ip_to_list(1, Attribs#attrib.next_hop)++" proto "++?PROTO),
     {noreply, State};
 
 handle_info({update, _Pid, Prefix, Attribs}, State) ->
-    log:info("update: ~w~n", [[Prefix, Attribs]]),
+    log:debug("update: ~w~n", [[Prefix, Attribs]]),
     os:cmd("ip ro change "++util:prefix_to_list(1, Prefix)++" via "++util:ip_to_list(1, Attribs#attrib.next_hop)++" proto "++?PROTO),
     {noreply, State};
 
 handle_info({withdraw, _Pid, Prefix}, State) ->
-    log:info("withdraw: ~w~n", [Prefix]),
+    log:debug("withdraw: ~w~n", [Prefix]),
     os:cmd("ip ro del "++util:prefix_to_list(1, Prefix)++" proto "++?PROTO),
     {noreply, State};
 
 handle_info({vrf_store_init, _Pid}, State) ->
-    log:info("store init~n", []),
-    log:info("route del: ~s~n", [os:cmd("ip ro ls proto "++?PROTO++"|sed 's/^/ip ro del /'|sh -")]),
+    log:debug("store init~n", []),
+    log:debug("route del: ~s~n", [os:cmd("ip ro ls proto "++?PROTO++"|sed 's/^/ip ro del /'|sh -")]),
     {noreply, State};
 
 handle_info(Msg, State) ->
@@ -45,7 +45,7 @@ code_change(_OldVsn, State, _Extra) ->
 
 
 terminate(_Reason, _State) ->
-    log:info("route del: ~s~n", [os:cmd("ip ro ls proto "++?PROTO++"|sed 's/^/ip ro del /'|sh -")]),
+    log:debug("route del: ~s~n", [os:cmd("ip ro ls proto "++?PROTO++"|sed 's/^/ip ro del /'|sh -")]),
     ok.
 
 
@@ -53,7 +53,7 @@ init([]) ->
     VRF="global",
     process_manager:register({rib,{VRF}}),
     process_manager:cast({vrf_store, {VRF}}, {new_peer, self()}),
-    log:info("route del: ~s~n", [os:cmd("ip ro ls proto "++?PROTO++"|sed 's/^/ip ro del /'|sh -")]),
+    log:debug("route del: ~s~n", [os:cmd("ip ro ls proto "++?PROTO++"|sed 's/^/ip ro del /'|sh -")]),
     {ok, []}.
 
 

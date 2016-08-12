@@ -82,10 +82,10 @@ add_route(Store, Pid, {OldActive, OldInactive}, Attributes) ->
 
 
 send_updates(Type, Store, Pid, Prefix, Attributes) when Type == announce ; Type == update ->
-    log:info("~s: ~w [~w]~n", [atom_to_list(Type), Prefix, Attributes]),
+    log:debug("~s: ~w [~w]~n", [atom_to_list(Type), Prefix, Attributes]),
     [P ! {Type, self(), Prefix, Attributes} || P <- Store#store.outpids, P /= Pid].
 send_updates(withdraw, Store, Pid, Prefix) ->
-    log:info("withdraw: ~w~n", [Prefix]),
+    log:debug("withdraw: ~w~n", [Prefix]),
     [P ! {withdraw, self(), Prefix} || P <- Store#store.outpids, P /= Pid].
 
 %% TODO: multipath is not advertised to rib
