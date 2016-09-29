@@ -2,7 +2,7 @@
 -export([debug/2, info/2, err/2]).
 
 lookup() ->
-    case ets:match(process_store, {'$1', self()}) of
+    case process_store:get_key(self()) of
 	[[Pid]] -> Pid;
 	[] -> self()
     end.

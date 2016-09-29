@@ -242,8 +242,8 @@ terminate(_Reason, _State) ->
 
 init([VRF]) ->
     ok = process_manager:register({vrf_store, {VRF}}),
-    PeerPids = lists:flatten(ets:match(process_store, {{prefix_store, {VRF, '_'}}, '$1'})) ++
-	       lists:flatten(ets:match(process_store, {{rib, {VRF}}, '$1'})),
+    PeerPids = lists:flatten(process_manager:get_pid({prefix_store, {VRF, '_'}})) ++
+	       lists:flatten(process_manager:get_pid({rib, {VRF}})),
     lists:foldl(fun(Pid, _) -> Pid ! {vrf_store_init, self()}, erlang:monitor(process, Pid) end, [], PeerPids),
     {ok, #store{prefixes=store_init(), outpids=PeerPids, wait_for_store_pids=PeerPids}}.
 
